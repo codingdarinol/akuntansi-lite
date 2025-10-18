@@ -8,9 +8,47 @@
 }
 
 body {
-  @apply bg-slate-50 text-slate-900 antialiased;
+  @apply bg-brand-50 text-brand-900 antialiased;
 }
 
 #app {
   min-height: 100vh;
+}
+
+@layer base {
+  h1,
+  h2,
+  h3 {
+    @apply text-brand-900 font-semibold tracking-tight;
+  }
+}
+
+@layer components {
+  .glass-panel {
+    @apply rounded-4xl border border-brand-100 bg-brand-50/80;
+  }
+
+  .surface-card {
+    @apply rounded-4xl border border-brand-100 bg-white shadow-card;
+  }
+
+  .pill {
+    @apply inline-flex items-center gap-2 rounded-full bg-accent-100/80 px-4 py-1 text-xs font-medium uppercase tracking-wide text-brand-700;
+  }
+
+  .btn-primary {
+    @apply inline-flex items-center justify-center gap-2 rounded-full bg-brand-600 px-5 py-2 text-sm font-semibold text-white shadow-card transition hover:bg-brand-700;
+  }
+
+  .btn-muted {
+    @apply inline-flex items-center justify-center gap-2 rounded-full border border-brand-200 bg-white px-5 py-2 text-sm font-semibold text-brand-700 transition hover:bg-brand-50;
+  }
+
+  .card-grid {
+    @apply grid gap-5 md:grid-cols-2 xl:grid-cols-4;
+  }
+
+  .section-heading {
+    @apply flex items-center justify-between gap-4 text-sm uppercase tracking-[0.35em] text-brand-400;
+  }
 }
