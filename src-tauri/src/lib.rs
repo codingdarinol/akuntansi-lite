@@ -1,8 +1,8 @@
 use std::{fs, path::Path, path::PathBuf};
 
 use anyhow::{Context, Result as AnyResult};
-use chrono::{NaiveDate, Utc};
-use rusqlite::{params, params_from_iter, types::Value, Connection};
+use chrono::{Datelike, NaiveDate, Utc};
+use rusqlite::{params, params_from_iter, types::Value, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
 #[cfg(feature = "tauri-plugin-log")]
@@ -287,9 +287,99 @@ fn prepare_database_path(handle: &AppHandle) -> AnyResult<PathBuf> {
   Ok(app_config_dir)
 }
 
+fn maybe_upgrade_legacy_accounts_schema(conn: &Connection) -> AnyResult<()> {
+  let mut stmt = conn
+    .prepare("PRAGMA table_info(accounts)")
+    .context("failed to inspect accounts table info")?;
+  let columns = stmt
+    .query_map([], |row| row.get::<_, String>(1))?
+    .collect::<rusqlite::Result<Vec<_>>>()
+    .context("failed to read accounts table columns")?;
+
+  let has_category = columns.iter().any(|name| name == "category");
+  let has_account_type = columns.iter().any(|name| name == "account_type");
+
+  if has_category && !has_account_type {
+    conn
+      .execute_batch("PRAGMA foreign_keys = OFF;")
+      .context("failed to disable foreign keys before legacy accounts upgrade")?;
+
+    conn
+      .execute_batch(
+        "
+          BEGIN TRANSACTION;
+
+          ALTER TABLE accounts RENAME TO accounts_old;
+
+          CREATE TABLE accounts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            code TEXT NOT NULL UNIQUE,
+            name TEXT NOT NULL,
+            account_type TEXT NOT NULL CHECK (account_type IN ('ASSET','LIABILITY','EQUITY','REVENUE','EXPENSE')),
+            sub_type TEXT,
+            normal_balance TEXT NOT NULL CHECK (normal_balance IN ('DEBIT','CREDIT')),
+            parent_id INTEGER REFERENCES accounts(id) ON DELETE SET NULL,
+            description TEXT,
+            is_active INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+          );
+
+          INSERT INTO accounts (
+            id,
+            code,
+            name,
+            account_type,
+            sub_type,
+            normal_balance,
+            parent_id,
+            description,
+            is_active,
+            created_at,
+            updated_at
+          )
+          SELECT
+            id,
+            code,
+            name,
+            CASE
+              WHEN category IN ('ASSET','LIABILITY','EQUITY','REVENUE','EXPENSE') THEN category
+              ELSE 'ASSET'
+            END AS account_type,
+            NULL AS sub_type,
+            CASE
+              WHEN category IN ('LIABILITY','EQUITY','REVENUE') THEN 'CREDIT'
+              ELSE 'DEBIT'
+            END AS normal_balance,
+            parent_id,
+            NULL AS description,
+            is_active,
+            created_at,
+            updated_at
+          FROM accounts_old;
+
+          DROP TABLE accounts_old;
+
+          CREATE INDEX IF NOT EXISTS idx_accounts_parent ON accounts(parent_id);
+          CREATE INDEX IF NOT EXISTS idx_accounts_type ON accounts(account_type);
+
+          COMMIT;
+        ",
+      )
+      .context("failed to upgrade legacy accounts table schema")?;
+
+    conn
+      .execute_batch("PRAGMA foreign_keys = ON;")
+      .context("failed to re-enable foreign keys after legacy accounts upgrade")?;
+  }
+
+  Ok(())
+}
+
 fn run_migrations(db_path: &Path) -> AnyResult<()> {
   let conn = Connection::open(db_path)
     .with_context(|| format!("unable to open database at {:?}", db_path))?;
+  maybe_upgrade_legacy_accounts_schema(&conn)?;
   conn
     .execute_batch("PRAGMA foreign_keys = ON;")
     .context("failed to enable foreign keys during migration")?;
@@ -326,7 +416,9 @@ pub fn run() {
       list_accounts,
       create_account,
       list_journals,
-      create_journal_entry
+      create_journal_entry,
+      generate_balance_sheet,
+      generate_income_statement
     ])
     .run(tauri::generate_context!())
     .expect("error while running tauri application");
@@ -726,6 +818,577 @@ fn create_journal_entry(
     .map_err(|err| format!("gagal mengambil ringkasan jurnal: {err}"))?;
 
   Ok(summary)
+}
+
+#[derive(Default, Deserialize)]
+struct BalanceSheetParams {
+  as_of: Option<String>,
+}
+
+#[derive(Default, Deserialize)]
+struct IncomeStatementParams {
+  start_date: Option<String>,
+  end_date: Option<String>,
+}
+
+#[derive(Serialize)]
+struct AccountBalanceRow {
+  account_id: i64,
+  parent_id: Option<i64>,
+  code: String,
+  name: String,
+  account_type: String,
+  normal_balance: String,
+  balance: f64,
+}
+
+#[derive(Serialize)]
+struct BalanceSheetSection {
+  key: String,
+  label: String,
+  total: f64,
+  accounts: Vec<AccountBalanceRow>,
+}
+
+#[derive(Serialize)]
+struct BalanceSheetResponse {
+  as_of: String,
+  currency: String,
+  sections: Vec<BalanceSheetSection>,
+  total_liabilities_and_equity: f64,
+  generated_at: String,
+}
+
+#[derive(Serialize)]
+struct IncomeStatementSection {
+  key: String,
+  label: String,
+  total: f64,
+  accounts: Vec<AccountBalanceRow>,
+}
+
+#[derive(Serialize)]
+struct IncomeStatementTotals {
+  total_revenue: f64,
+  total_expenses: f64,
+  net_income: f64,
+}
+
+#[derive(Serialize)]
+struct IncomeStatementResponse {
+  start_date: String,
+  end_date: String,
+  currency: String,
+  sections: Vec<IncomeStatementSection>,
+  totals: IncomeStatementTotals,
+  generated_at: String,
+}
+
+#[tauri::command]
+fn generate_balance_sheet(
+  state: tauri::State<DatabaseState>,
+  params: Option<BalanceSheetParams>,
+) -> Result<BalanceSheetResponse, String> {
+  let params = params.unwrap_or_default();
+  let as_of = match params.as_of {
+    Some(date_str) => NaiveDate::parse_from_str(&date_str, "%Y-%m-%d")
+      .map_err(|_| "Format tanggal tidak valid. Gunakan YYYY-MM-DD.".to_string())?,
+    None => Utc::now().date_naive(),
+  };
+
+  let conn = state.open_connection().map_err(to_string)?;
+  compute_balance_sheet(&conn, as_of).map_err(to_string)
+}
+
+#[tauri::command]
+fn generate_income_statement(
+  state: tauri::State<DatabaseState>,
+  params: Option<IncomeStatementParams>,
+) -> Result<IncomeStatementResponse, String> {
+  let params = params.unwrap_or_default();
+  let end_date = match params.end_date {
+    Some(date_str) => NaiveDate::parse_from_str(&date_str, "%Y-%m-%d")
+      .map_err(|_| "Format tanggal akhir tidak valid. Gunakan YYYY-MM-DD.".to_string())?,
+    None => Utc::now().date_naive(),
+  };
+  let start_date = match params.start_date {
+    Some(date_str) => NaiveDate::parse_from_str(&date_str, "%Y-%m-%d")
+      .map_err(|_| "Format tanggal mulai tidak valid. Gunakan YYYY-MM-DD.".to_string())?,
+    None => NaiveDate::from_ymd_opt(end_date.year(), 1, 1).unwrap_or(end_date),
+  };
+
+  if start_date > end_date {
+    return Err("Tanggal mulai tidak boleh setelah tanggal akhir.".into());
+  }
+
+  let conn = state.open_connection().map_err(to_string)?;
+  compute_income_statement(&conn, start_date, end_date).map_err(to_string)
+}
+
+fn compute_balance_sheet(conn: &Connection, as_of: NaiveDate) -> AnyResult<BalanceSheetResponse> {
+  let currency = fetch_default_currency(conn)?;
+  let accounts = load_account_balances(
+    conn,
+    Some(&["ASSET", "LIABILITY", "EQUITY"]),
+    earliest_supported_date(),
+    as_of,
+  )?;
+
+  let mut assets = Vec::new();
+  let mut liabilities = Vec::new();
+  let mut equity = Vec::new();
+  let mut total_assets = 0.0;
+  let mut total_liabilities = 0.0;
+  let mut total_equity = 0.0;
+
+  for account in accounts {
+    match account.account_type.as_str() {
+      "ASSET" => {
+        total_assets += account.balance;
+        assets.push(account);
+      }
+      "LIABILITY" => {
+        total_liabilities += account.balance;
+        liabilities.push(account);
+      }
+      "EQUITY" => {
+        total_equity += account.balance;
+        equity.push(account);
+      }
+      _ => {}
+    }
+  }
+
+  let total_liabilities_and_equity = normalize_amount(total_liabilities + total_equity);
+
+  Ok(BalanceSheetResponse {
+    as_of: as_of.format("%Y-%m-%d").to_string(),
+    currency,
+    sections: vec![
+      BalanceSheetSection {
+        key: "ASSET".to_string(),
+        label: "Aset".to_string(),
+        total: normalize_amount(total_assets),
+        accounts: assets,
+      },
+      BalanceSheetSection {
+        key: "LIABILITY".to_string(),
+        label: "Kewajiban".to_string(),
+        total: normalize_amount(total_liabilities),
+        accounts: liabilities,
+      },
+      BalanceSheetSection {
+        key: "EQUITY".to_string(),
+        label: "Ekuitas".to_string(),
+        total: normalize_amount(total_equity),
+        accounts: equity,
+      },
+    ],
+    total_liabilities_and_equity,
+    generated_at: Utc::now().to_rfc3339(),
+  })
+}
+
+fn compute_income_statement(
+  conn: &Connection,
+  start_date: NaiveDate,
+  end_date: NaiveDate,
+) -> AnyResult<IncomeStatementResponse> {
+  let currency = fetch_default_currency(conn)?;
+  let accounts = load_account_balances(
+    conn,
+    Some(&["REVENUE", "EXPENSE"]),
+    start_date,
+    end_date,
+  )?;
+
+  let mut revenues = Vec::new();
+  let mut expenses = Vec::new();
+  let mut revenue_total = 0.0;
+  let mut expense_total = 0.0;
+
+  for account in accounts {
+    match account.account_type.as_str() {
+      "REVENUE" => {
+        revenue_total += account.balance;
+        revenues.push(account);
+      }
+      "EXPENSE" => {
+        expense_total += account.balance;
+        expenses.push(account);
+      }
+      _ => {}
+    }
+  }
+
+  let total_revenue = normalize_amount(revenue_total);
+  let total_expenses = normalize_amount(expense_total);
+  let net_income = normalize_amount(total_revenue - total_expenses);
+
+  Ok(IncomeStatementResponse {
+    start_date: start_date.format("%Y-%m-%d").to_string(),
+    end_date: end_date.format("%Y-%m-%d").to_string(),
+    currency,
+    sections: vec![
+      IncomeStatementSection {
+        key: "REVENUE".to_string(),
+        label: "Pendapatan".to_string(),
+        total: total_revenue,
+        accounts: revenues,
+      },
+      IncomeStatementSection {
+        key: "EXPENSE".to_string(),
+        label: "Beban".to_string(),
+        total: total_expenses,
+        accounts: expenses,
+      },
+    ],
+    totals: IncomeStatementTotals {
+      total_revenue,
+      total_expenses,
+      net_income,
+    },
+    generated_at: Utc::now().to_rfc3339(),
+  })
+}
+
+fn load_account_balances(
+  conn: &Connection,
+  account_types: Option<&[&str]>,
+  start_date: NaiveDate,
+  end_date: NaiveDate,
+) -> AnyResult<Vec<AccountBalanceRow>> {
+  let start_str = start_date.format("%Y-%m-%d").to_string();
+  let end_str = end_date.format("%Y-%m-%d").to_string();
+
+  let mut sql = String::from(
+    "
+      SELECT
+        a.id,
+        a.parent_id,
+        a.code,
+        a.name,
+        a.account_type,
+        a.normal_balance,
+        IFNULL(SUM(CASE WHEN j.journal_date BETWEEN ? AND ? THEN jl.debit ELSE 0 END), 0) AS total_debit,
+        IFNULL(SUM(CASE WHEN j.journal_date BETWEEN ? AND ? THEN jl.credit ELSE 0 END), 0) AS total_credit
+      FROM accounts a
+      LEFT JOIN journal_lines jl ON jl.account_id = a.id
+      LEFT JOIN journals j ON j.id = jl.journal_id
+    ",
+  );
+
+  let mut bindings: Vec<Value> = Vec::new();
+  bindings.push(Value::from(start_str.clone()));
+  bindings.push(Value::from(end_str.clone()));
+  bindings.push(Value::from(start_str));
+  bindings.push(Value::from(end_str.clone()));
+
+  if let Some(types) = account_types {
+    if !types.is_empty() {
+      sql.push_str(" WHERE a.account_type IN (");
+      for (index, _) in types.iter().enumerate() {
+        if index > 0 {
+          sql.push_str(", ");
+        }
+        sql.push('?');
+      }
+      sql.push(')');
+      for kind in types {
+        bindings.push(Value::from((*kind).to_string()));
+      }
+    }
+  }
+
+  sql.push_str(" GROUP BY a.id ORDER BY a.code ASC");
+
+  let mut stmt = conn.prepare(&sql)?;
+  let mut rows = stmt.query(params_from_iter(bindings.iter()))?;
+
+  let mut accounts = Vec::new();
+  while let Some(row) = rows.next()? {
+    let normal_balance: String = row.get(5)?;
+    let total_debit: f64 = row.get(6)?;
+    let total_credit: f64 = row.get(7)?;
+    let balance = if normal_balance == "DEBIT" {
+      total_debit - total_credit
+    } else {
+      total_credit - total_debit
+    };
+    let balance = normalize_amount(balance);
+
+    accounts.push(AccountBalanceRow {
+      account_id: row.get(0)?,
+      parent_id: row.get(1)?,
+      code: row.get(2)?,
+      name: row.get(3)?,
+      account_type: row.get(4)?,
+      normal_balance,
+      balance,
+    });
+  }
+
+  Ok(accounts)
+}
+
+fn fetch_default_currency(conn: &Connection) -> AnyResult<String> {
+  let currency: Option<String> = conn
+    .query_row(
+      "SELECT default_currency FROM app_settings WHERE id = 1",
+      [],
+      |row| row.get(0),
+    )
+    .optional()?;
+
+  Ok(currency.filter(|value| !value.is_empty()).unwrap_or_else(|| "IDR".to_string()))
+}
+
+fn earliest_supported_date() -> NaiveDate {
+  NaiveDate::from_ymd_opt(1900, 1, 1).expect("tanggal default valid")
+}
+
+fn normalize_amount(value: f64) -> f64 {
+  let rounded = (value * 100.0).round() / 100.0;
+  if rounded.abs() < 0.005 {
+    0.0
+  } else {
+    rounded
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use chrono::NaiveDate;
+  use rusqlite::Connection;
+
+  fn setup_connection() -> Connection {
+    let conn = Connection::open_in_memory().expect("gagal membuka database in-memory");
+    conn
+      .execute_batch("PRAGMA foreign_keys = ON;")
+      .expect("gagal mengaktifkan foreign keys");
+    for migration in super::MIGRATION_DEFS {
+      conn
+        .execute_batch(migration.sql)
+        .expect("gagal menjalankan migrasi");
+    }
+    conn
+  }
+
+  fn account_id_by_code(conn: &Connection, code: &str) -> i64 {
+    conn
+      .query_row("SELECT id FROM accounts WHERE code = ?1", [code], |row| row.get(0))
+      .expect("kode akun tidak ditemukan")
+  }
+
+  #[test]
+  fn legacy_accounts_schema_is_upgraded() {
+    let conn = Connection::open_in_memory().expect("gagal membuka database in-memory");
+    conn
+      .execute_batch(
+        "
+          CREATE TABLE accounts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            code TEXT NOT NULL UNIQUE,
+            name TEXT NOT NULL,
+            category TEXT NOT NULL,
+            parent_id INTEGER,
+            is_active INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+          );
+
+          CREATE INDEX idx_accounts_category ON accounts(category);
+          CREATE INDEX idx_accounts_parent ON accounts(parent_id);
+
+          INSERT INTO accounts (code, name, category)
+          VALUES
+            ('1000', 'Aktiva Lancar', 'ASSET'),
+            ('2000', 'Kewajiban Lancar', 'LIABILITY');
+        ",
+      )
+      .expect("gagal membuat skema akun legacy");
+
+    super::maybe_upgrade_legacy_accounts_schema(&conn)
+      .expect("upgrade skema akun legacy gagal");
+
+    let mut stmt = conn
+      .prepare("PRAGMA table_info(accounts)")
+      .expect("gagal membaca skema akun baru");
+    let columns = stmt
+      .query_map([], |row| row.get::<_, String>(1))
+      .expect("gagal memetakan kolom")
+      .collect::<rusqlite::Result<Vec<_>>>()
+      .expect("gagal mengumpulkan daftar kolom");
+
+    assert!(columns.contains(&"account_type".to_string()));
+    assert!(columns.contains(&"normal_balance".to_string()));
+    assert!(!columns.contains(&"category".to_string()));
+
+    let (account_type, normal_balance): (String, String) = conn
+      .query_row(
+        "
+          SELECT account_type, normal_balance
+          FROM accounts
+          WHERE code = '2000'
+        ",
+        [],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+      )
+      .expect("gagal membaca data akun hasil upgrade");
+
+    assert_eq!(account_type, "LIABILITY");
+    assert_eq!(normal_balance, "CREDIT");
+
+    let create_accounts_migration = super::MIGRATION_DEFS
+      .iter()
+      .find(|migration| migration.description == "create_accounts_table")
+      .expect("migrasi accounts tersedia");
+
+    conn
+      .execute_batch(create_accounts_migration.sql)
+      .expect("migrasi accounts seharusnya idempotent setelah upgrade");
+  }
+
+  #[test]
+  fn balance_sheet_totals_follow_accounting_equation() {
+    let conn = setup_connection();
+
+    conn
+      .execute(
+        "
+          INSERT INTO journals (journal_number, journal_date, memo, source)
+          VALUES (?1, ?2, ?3, ?4)
+        ",
+        params!["JRN-TEST-001", "2025-01-15", "Setoran modal awal", "tests"],
+      )
+      .unwrap();
+    let journal_id = conn.last_insert_rowid();
+
+    let cash_id = account_id_by_code(&conn, "1100");
+    let equity_id = account_id_by_code(&conn, "3100");
+
+    conn
+      .execute(
+        "
+          INSERT INTO journal_lines (journal_id, account_id, debit, credit)
+          VALUES (?1, ?2, ?3, ?4)
+        ",
+        params![journal_id, cash_id, 5_000_000.0, 0.0],
+      )
+      .unwrap();
+
+    conn
+      .execute(
+        "
+          INSERT INTO journal_lines (journal_id, account_id, debit, credit)
+          VALUES (?1, ?2, ?3, ?4)
+        ",
+        params![journal_id, equity_id, 0.0, 5_000_000.0],
+      )
+      .unwrap();
+
+    let report =
+      compute_balance_sheet(&conn, NaiveDate::from_ymd_opt(2025, 1, 31).unwrap()).unwrap();
+
+    let assets = report
+      .sections
+      .iter()
+      .find(|section| section.key == "ASSET")
+      .expect("section aset tersedia");
+    let equity = report
+      .sections
+      .iter()
+      .find(|section| section.key == "EQUITY")
+      .expect("section ekuitas tersedia");
+
+    assert_eq!(assets.total, 5_000_000.0);
+    assert_eq!(equity.total, 5_000_000.0);
+    assert_eq!(report.total_liabilities_and_equity, 5_000_000.0);
+  }
+
+  #[test]
+  fn income_statement_net_income_is_computed_correctly() {
+    let conn = setup_connection();
+
+    conn
+      .execute(
+        "
+          INSERT INTO journals (journal_number, journal_date, memo, source)
+          VALUES (?1, ?2, ?3, ?4)
+        ",
+        params!["JRN-TEST-002", "2025-02-05", "Pendapatan jasa", "tests"],
+      )
+      .unwrap();
+    let revenue_journal_id = conn.last_insert_rowid();
+
+    let cash_id = account_id_by_code(&conn, "1100");
+    let revenue_id = account_id_by_code(&conn, "4100");
+
+    conn
+      .execute(
+        "
+          INSERT INTO journal_lines (journal_id, account_id, debit, credit)
+          VALUES (?1, ?2, ?3, ?4)
+        ",
+        params![revenue_journal_id, cash_id, 2_000_000.0, 0.0],
+      )
+      .unwrap();
+
+    conn
+      .execute(
+        "
+          INSERT INTO journal_lines (journal_id, account_id, debit, credit)
+          VALUES (?1, ?2, ?3, ?4)
+        ",
+        params![revenue_journal_id, revenue_id, 0.0, 2_000_000.0],
+      )
+      .unwrap();
+
+    conn
+      .execute(
+        "
+          INSERT INTO journals (journal_number, journal_date, memo, source)
+          VALUES (?1, ?2, ?3, ?4)
+        ",
+        params!["JRN-TEST-003", "2025-02-10", "Pembayaran gaji", "tests"],
+      )
+      .unwrap();
+    let expense_journal_id = conn.last_insert_rowid();
+
+    let expense_id = account_id_by_code(&conn, "6100");
+
+    conn
+      .execute(
+        "
+          INSERT INTO journal_lines (journal_id, account_id, debit, credit)
+          VALUES (?1, ?2, ?3, ?4)
+        ",
+        params![expense_journal_id, expense_id, 750_000.0, 0.0],
+      )
+      .unwrap();
+
+    conn
+      .execute(
+        "
+          INSERT INTO journal_lines (journal_id, account_id, debit, credit)
+          VALUES (?1, ?2, ?3, ?4)
+        ",
+        params![expense_journal_id, cash_id, 0.0, 750_000.0],
+      )
+      .unwrap();
+
+    let report = compute_income_statement(
+      &conn,
+      NaiveDate::from_ymd_opt(2025, 1, 1).unwrap(),
+      NaiveDate::from_ymd_opt(2025, 12, 31).unwrap(),
+    )
+    .unwrap();
+
+    assert_eq!(report.totals.total_revenue, 2_000_000.0);
+    assert_eq!(report.totals.total_expenses, 750_000.0);
+    assert_eq!(report.totals.net_income, 1_250_000.0);
+  }
 }
 
 fn to_string<E: std::fmt::Display>(err: E) -> String {
