@@ -19,8 +19,11 @@ export const useJournalsStore = defineStore('journals', {
     journals: (state) => state.items,
   },
   actions: {
-    async load(params: JournalFilterParams = {}) {
+    async load(params: JournalFilterParams = {}, force = false) {
       if (this.loading) return
+      if (!force && this.items.length > 0 && Object.keys(params).length === 0) {
+        return
+      }
       this.loading = true
       this.error = null
 

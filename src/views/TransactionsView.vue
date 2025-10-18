@@ -105,6 +105,10 @@ async function submitJournal() {
     submitting.value = false
   }
 }
+
+function handleReload() {
+  journalsStore.load({}, true)
+}
 </script>
 
 <template>
@@ -117,7 +121,7 @@ async function submitJournal() {
         </p>
       </div>
       <div class="flex flex-wrap items-center gap-3">
-        <button type="button" class="btn-muted" @click="journalsStore.load(true)" :disabled="loading">
+        <button type="button" class="btn-muted" @click="handleReload" :disabled="loading">
           Muat ulang
         </button>
         <button type="button" class="btn-primary" @click="showCreate = true">
@@ -255,7 +259,7 @@ async function submitJournal() {
               <div class="font-semibold text-brand-900">{{ journal.journal_number ?? 'Manual' }}</div>
               <p v-if="journal.memo" class="text-xs text-brand-500">{{ journal.memo }}</p>
             </span>
-            <span class="text-brand-600">{{ journal.source ?? '—' }}</span>
+            <span class="text-brand-600">{{ journal.source ?? '-' }}</span>
             <span class="font-semibold text-brand-600">{{ currency.format(journal.total_debit) }}</span>
             <span class="font-semibold text-brand-600">{{ currency.format(journal.total_credit) }}</span>
           </div>

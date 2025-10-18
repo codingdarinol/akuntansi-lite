@@ -568,6 +568,14 @@ o	[ ] Perbaikan bug intensif.
 o	[ ] Optimasi performa.
 o	[ ] Persiapan build aplikasi untuk platform target (Windows, macOS, Linux) dan rilis v1.0.0.
 --------------------------------------------------------------------------------
+Catatan Progres Terkini (18 Oktober 2025)
+- Skema database diperluas melalui migrasi awal: `app_settings`, `accounts` (dengan `account_type`, `normal_balance`, dan relasi parent), `contacts`, `items`, `invoices`, `invoice_items`, `invoice_payments`, `journals`, dan `journal_lines`. Seeder otomatis menambahkan chart of accounts dasar (kode 1000–6500).
+- Backend Tauri menyediakan command `list_accounts`, `create_account`, `list_journals`, serta `create_journal_entry` (validasi saldo debit/kredit seimbang, penomoran jurnal otomatis).
+- Frontend menambahkan service + Pinia store (`useAccountsStore`, `useJournalsStore`) untuk mengakses command tersebut.
+- `AccountsView.vue` kini menampilkan data real, memuat ulang data, dan menawarkan form pembuatan akun baru (normal balance mengikuti tipe akun).
+- `TransactionsView.vue` menampilkan daftar jurnal aktual, form entri jurnal manual dengan baris dinamis, dan pemeriksaan keseimbangan debit/kredit.
+- Seluruh komponen baru mengikuti design system navy–kuning–putih (surface card rounded-4xl, `shadow-card`, badge warna konsisten).
+--------------------------------------------------------------------------------
 Lampiran A.1 - Setup Proyek LokalBuku (Oktober 2025)
 - Prasyarat: Node.js 18+, npm 10+, Rust 1.77+, cargo-tauri 2.8.4.
 - Inisialisasi frontend: jalankan perintah `npm create vite@latest frontend -- --template vue-ts`, lalu pindahkan hasil scaffold ke direktori akar repositori.
