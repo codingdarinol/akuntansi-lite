@@ -25,16 +25,17 @@ Aplikasi mengadopsi arsitektur Tauri, yang secara fundamental lebih aman dan leb
 •	Backend (Rust Core): Proses Rust yang berjalan secara native, memberikan performa mendekati aplikasi asli. Bertugas sebagai jembatan ke sistem operasi, menjalankan logika bisnis kritis (kalkulasi laporan, validasi), dan menjadi satu-satunya gerbang untuk semua operasi database SQLite. Komunikasi antara Frontend dan Backend terjadi secara aman dan efisien melalui Tauri Commands, yang pada dasarnya adalah pemanggilan fungsi Rust dari JavaScript dengan serialisasi data otomatis.
 2.2. Tumpukan Teknologi
 Pilihan teknologi didasarkan pada prinsip kinerja, keamanan, dan produktivitas pengembang.
-•	Core Framework: Tauri v2.x (diadopsi karena kompatibilitas plugin-sql terbaru) - Dipilih karena jejak memori yang kecil, ukuran bundle aplikasi yang minimal, dan keamanan bawaan dari Rust.
-•	Frontend Framework: Vue 3 (Composition API) + Vite - Composition API memungkinkan logika yang kompleks diorganisir ke dalam unit-unit yang dapat digunakan kembali (composables), sementara Vite memberikan pengalaman pengembangan yang sangat cepat.
-•	Routing: vue-router - Solusi routing resmi untuk Vue.js.
-•	Manajemen State: Pinia - State manager yang ringan, modular, dan memiliki integrasi TypeScript yang sangat baik, membuatnya lebih mudah untuk dikelola dibandingkan Vuex pada proyek skala besar.
-•	Styling: TailwindCSS v3 + Headless UI - TailwindCSS mempercepat pengembangan UI secara konsisten. Headless UI menyediakan komponen aksesibel (seperti Modal, Dropdown) tanpa gaya, yang kemudian kita gayakan dengan Tailwind.
-•	Library Ikon: Lucide Icons (lucide-vue-next) - Ringan, konsisten, dan komprehensif.
-•	Library Grafik: ApexCharts.js (vue3-apexcharts) - Menyediakan grafik yang interaktif, responsif, dan mudah diintegrasikan dengan Vue.
-•	Backend Language: Rust - Dipilih karena jaminan keamanannya (tanpa garbage collector, manajemen memori yang ketat) dan performa tinggi, sangat ideal untuk logika bisnis inti dan operasi database.
-•	Database: SQLite (via tauri-plugin-sql) - Database berbasis file yang andal, portabel, dan tidak memerlukan server terpisah, sempurna untuk aplikasi desktop offline.
-•	Migrasi Database: rusqlite_migration crate - Kritis untuk mengelola evolusi skema database di versi aplikasi yang akan datang tanpa menghapus data pengguna.
+- Core Framework: Tauri v2.x (diadopsi karena kompatibilitas plugin-sql terbaru) - Dipilih karena jejak memori yang kecil, ukuran bundle aplikasi yang minimal, dan keamanan bawaan dari Rust.
+- Frontend Framework: Vue 3 (Composition API) + Vite - Composition API memungkinkan logika yang kompleks diorganisir ke dalam unit-unit yang dapat digunakan kembali (composables), sementara Vite memberikan pengalaman pengembangan yang sangat cepat.
+- Routing: vue-router - Solusi routing resmi untuk Vue.js.
+- Manajemen State: Pinia - State manager yang ringan, modular, dan memiliki integrasi TypeScript yang sangat baik, membuatnya lebih mudah untuk dikelola dibandingkan Vuex pada proyek skala besar.
+- Styling: TailwindCSS v3 + Headless UI - TailwindCSS mempercepat pengembangan UI secara konsisten. Headless UI menyediakan komponen aksesibel (seperti Modal, Dropdown) tanpa gaya, yang kemudian kita gayakan dengan Tailwind.
+- Desain Sistem UI: Palet utama navy (#3D5A89), aksen kuning (#F6B713), dan putih. Kartu memakai radius besar (rounded-4xl/5xl), shadow-card, serta tipografi kontras (teks putih pada permukaan gelap, brand-900 pada permukaan terang). Badge status menggunakan konvensi warna konsisten: brand untuk Paid, accent untuk Due Soon, abu-abu untuk Draft/Cancelled.
+- Library Ikon: Lucide Icons (lucide-vue-next) - Ringan, konsisten, dan komprehensif.
+- Library Grafik: ApexCharts.js (vue3-apexcharts) - Menyediakan grafik yang interaktif, responsif, dan mudah diintegrasikan dengan Vue.
+- Backend Language: Rust - Dipilih karena jaminan keamanannya (tanpa garbage collector, manajemen memori yang ketat) dan performa tinggi, sangat ideal untuk logika bisnis inti dan operasi database.
+- Database: SQLite (via tauri-plugin-sql) - Database berbasis file yang andal, portabel, dan tidak memerlukan server terpisah, sempurna untuk aplikasi desktop offline.
+- Migrasi Database: rusqlite_migration crate - Kritis untuk mengelola evolusi skema database di versi aplikasi yang akan datang tanpa menghapus data pengguna.
 3. 🗃️ Desain Skema Database (Revisi Final & Lengkap)
 3.1. Filosofi Desain
 Skema database ini dirancang berdasarkan prinsip-prinsip berikut:
@@ -261,11 +262,11 @@ CREATE TABLE depreciation_logs (
 4.1. Kerangka Utama Aplikasi (Shell)
 •	Tujuan: Menyediakan navigasi utama yang konsisten di seluruh aplikasi.
 •	Desain UI/UX:
-o	Sebuah Sidebar Kiri vertikal yang dapat diciutkan (collapsible).
-o	Saat diciutkan, hanya ikon menu dan tombol expand yang terlihat.
-o	Pojok kiri atas menampilkan Nama Perusahaan (diambil dari app_settings).
-o	Daftar Menu Utama (Ikon + Teks):
-1.	Dashboard
+- Sidebar kiri vertikal menggunakan latar brand-900, teks brand-50, dan ikon Lucide. Mode collapsible mempertahankan ikon saat sidebar dipersempit.
+- Saat diciutkan, hanya ikon menu dan tombol expand yang terlihat.
+- Pojok kiri atas menampilkan inisial aplikasi ("LB") dan nama perusahaan dari `app_settings`.
+- Daftar menu utama (ikon + teks): Dashboard, Penjualan, Pembelian, Master Data, Bagan Akun, Jurnal Umum, Buku Besar, Laporan, Pengaturan.
+- Quick links di bagian bawah: Pusat Bantuan, Shortcut Keyboard, Ganti Database, serta informasi versi aplikasi.
 2.	Akun
 3.	Data
 4.	Penjualan
@@ -485,13 +486,13 @@ o	Halaman Data Aset Tetap:
 	Tombol + Aset Baru.
 	Form Aset Baru: Mencakup input untuk masa manfaat (akuntansi & fiskal) dan metode penyusutan.
 4.5. Modul: Penjualan & Pembelian
-•	Tujuan: Mencatat dan melacak semua transaksi penjualan dan pembelian.
-•	Desain UI/UX:
-o	Tampilan utama berupa tabel data (Data Table) yang powerful.
-o	Filter di Atas Tabel:
-1.	Input Pencarian (berdasarkan no. faktur, nama pelanggan/pemasok).
-2.	Filter Rentang Tanggal.
-3.	Dropdown Filter Status (Semua, Lunas, Dibayar Sebagian, Belum Dibayar, Jatuh Tempo).
+- Desain UI/UX:
+  o Kontainer tabel berupa surface-card bernuansa navy gelap dengan sudut rounded-4xl dan shadow-card.
+  o Filter di atas tabel: pencarian (nomor faktur/nama relasi), filter rentang tanggal, serta dropdown status (Semua, Lunas, Dibayar Sebagian, Belum Dibayar, Jatuh Tempo).
+  o Kolom tabel standar: Tanggal, Nomor Invoice, Relasi (Pelanggan/Pemasok), Tanggal Jatuh Tempo, Total, Sisa Tagihan, Status.
+  o Status badge menggunakan warna konsisten: brand (Paid/Lunas), accent (Partial/Dibayar Sebagian), abu-abu (Unpaid/Draft), merah lembut (Overdue).
+  o Kolom aksi (kanan): menu konteks (lihat detail, edit, cetak, catat pembayaran, hapus).
+  o Implementasi saat ini: placeholder UI telah tersedia di halaman Penjualan & Pembelian; data nyata dan command backend akan dihubungkan pada sprint modul operasional.
 o	Kolom Tabel (Contoh Penjualan): Tanggal, No. Invoice, Nama Pelanggan, Tanggal Jatuh Tempo, Total, Sisa Tagihan, Status (dengan badge warna).
 o	Kolom Aksi (paling kanan): Tombol ... yang membuka dropdown: Lihat Detail, Edit, Cetak, Catat Pembayaran, Hapus.
 o	Tombol + Buat Penjualan Baru di pojok kanan atas.
@@ -569,19 +570,17 @@ o	[ ] Persiapan build aplikasi untuk platform target (Windows, macOS, Linux) dan
 --------------------------------------------------------------------------------
 Lampiran A.1 - Setup Proyek LokalBuku (Oktober 2025)
 - Prasyarat: Node.js 18+, npm 10+, Rust 1.77+, cargo-tauri 2.8.4.
-- Inisialisasi frontend: 
-pm create vite@latest frontend -- --template vue-ts dilanjutkan penggabungan struktur ke root repositori.
-- Integrasi Tauri: cargo tauri init --ci --app-name LokalBuku --window-title LokalBuku --before-dev-command "npm run dev" --before-build-command "npm run build" --force.
-- Instalasi dependensi: 
---------------------------------------------------------------------------------
-Lampiran A.1 - Setup Proyek LokalBuku (Oktober 2025)
-- Prasyarat: Node.js 18+, npm 10+, Rust 1.77+, cargo-tauri 2.8.4.
-- Inisialisasi frontend: jalankan perintah npm create vite@latest frontend -- --template vue-ts lalu pindahkan hasil scaffold ke direktori akar repositori.
-- Integrasi Tauri: jalankan cargo tauri init --ci --app-name LokalBuku --window-title LokalBuku --before-dev-command "npm run dev" --before-build-command "npm run build" --force.
-- Instalasi dependensi: npm install diikuti pemasangan paket tambahan (vue-router, pinia, tailwindcss, @tauri-apps/api, @tauri-apps/plugin-sql, lucide-vue-next, vue3-apexcharts, @headlessui/vue).
-- Konfigurasi Tailwind: npx tailwindcss init -p, pembaruan alias Vite, dan pembuatan file src/assets/main.css.
-- Pengaturan plugin SQL: menambahkan tauri-plugin-sql v2.3 dengan daftar migration builder serta capability sql:default dan sql:allow-execute pada default.json.
-- Cara menjalankan pengembangan: npm run tauri:dev (menggabungkan Vite dev server dan proses Tauri).
-- Cara build release: npm run tauri:build.
+- Inisialisasi frontend: jalankan perintah `npm create vite@latest frontend -- --template vue-ts`, lalu pindahkan hasil scaffold ke direktori akar repositori.
+- Integrasi Tauri: jalankan `cargo tauri init --ci --app-name LokalBuku --window-title LokalBuku --before-dev-command "npm run dev" --before-build-command "npm run build" --force`.
+- Instalasi dependensi: `npm install` kemudian tambahkan paket pendukung (vue-router, pinia, tailwindcss, @tauri-apps/api, @tauri-apps/plugin-sql, lucide-vue-next, vue3-apexcharts, @headlessui/vue).
+- Konfigurasi Tailwind: `npx tailwindcss init -p`, perbarui alias Vite, dan buat `src/assets/main.css`.
+- Pengaturan plugin SQL: tambahkan `tauri-plugin-sql` v2.3 beserta konfigurasi permissions `sql:default` dan `sql:allow-execute`.
+- Cara menjalankan pengembangan: `npm run tauri:dev` (menggabungkan Vite dev server dan proses Tauri).
+- Cara build release: `npm run tauri:build`.
 - Lokasi database: tersimpan otomatis di direktori AppConfig OS (contoh Windows: %APPDATA%/com.tauri.dev/data/lokalbuku.db).
 - Catatan kompatibilitas: Tauri v2 dipilih karena versi plugin-sql terbaru tidak lagi mendukung Tauri v1.x.
+
+
+
+
+
